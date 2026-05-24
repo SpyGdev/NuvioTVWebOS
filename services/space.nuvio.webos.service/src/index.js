@@ -11,6 +11,8 @@ var waitForLocalServer = serverHost.waitForLocalServer;
 var requestActiveServerPath = serverHost.requestActiveServerPath;
 
 var RUNTIME_PATH = path.resolve(__dirname, "..", "runtime", "media-http.cjs");
+var TRACK_PROBE_READY_WAIT_TIMEOUT_MS = 1000;
+var TRACK_PROBE_HEALTH_TIMEOUT_MS = 500;
 
 function createService() {
   try {
@@ -141,6 +143,20 @@ function buildTracksFallbackPayload(error, tracksPath, status, extras) {
   }, extras || {});
 }
 
+function shouldSkipTrackProbe(mediaUrl) {
+  var normalizedUrl = String(mediaUrl || "").trim().toLowerCase();
+
+  // Adaptive streaming manifests and transient blob/data URLs do not provide
+  // useful embedded-track data through the local probe, so skip them entirely.
+  return (
+    normalizedUrl.indexOf(".m3u8") !== -1 ||
+    normalizedUrl.indexOf(".mpd") !== -1 ||
+    normalizedUrl.indexOf(".ism/manifest") !== -1 ||
+    normalizedUrl.indexOf("blob:") === 0 ||
+    normalizedUrl.indexOf("data:") === 0
+  );
+}
+
 function registerCommand(commandName, includeBody) {
   service.register(commandName, function(message) {
     ensureRuntimeStarted();
@@ -218,12 +234,19 @@ function registerTracksCommand() {
       return;
     }
 
+    if (shouldSkipTrackProbe(mediaUrl)) {
+      respond(message, buildTracksFallbackPayload("Track probe skipped for manifest-style media", tracksPath, null));
+      return;
+    }
+
     requestActiveServerPath(
       tracksPath,
       {
-        probeTimeoutMs: HEALTH_REQUEST_TIMEOUT_MS,
+        // Playback should not wait on embedded track discovery for long-running
+        // or incompatible media probes. Fail open quickly and let playback start.
+        probeTimeoutMs: TRACK_PROBE_HEALTH_TIMEOUT_MS,
         requestTimeoutMs: TRACK_REQUEST_TIMEOUT_MS,
-        readyTimeoutMs: READY_WAIT_TIMEOUT_MS,
+        readyTimeoutMs: TRACK_PROBE_READY_WAIT_TIMEOUT_MS,
         pollIntervalMs: READY_POLL_INTERVAL_MS
       },
       function(error, trackStatus, readyStatus) {
